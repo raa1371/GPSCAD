@@ -2,3 +2,5 @@ aiogram
 python-dotenv
 selenium
 webdriver-manager
+folium
+
