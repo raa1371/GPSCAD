@@ -1,24 +1,24 @@
-import logging
 import asyncio
+import logging
+import os
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import FSInputFile
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-import os
-from dotenv import load_dotenv
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
 
 # بارگیری متغیرهای محیطی
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = "117345423"  # آی‌دی عددی تلگرام مدیر (باید عددی باشد)
+ADMIN_ID = os.getenv("ADMIN_ID")  # مقدار را در .env مشخص کنید
 
-# بررسی مقدار توکن
-if TOKEN is None:
-    print("❌ خطا: مقدار TOKEN مقداردهی نشده است!")
-    exit(1)
-
-# راه‌اندازی ربات و ذخیره‌سازی وضعیت
+# تنظیمات ربات
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -27,7 +27,7 @@ class GPSState(StatesGroup):
     collecting = State()
     confirming = State()
 
-# ذخیره مختصات برای هر کاربر
+# ذخیره مختصات کاربران
 user_data = {}
 
 # شروع ربات
@@ -35,25 +35,20 @@ user_data = {}
 async def start_handler(message: types.Message, state: FSMContext):
     user_data[message.chat.id] = []
     await state.set_state(GPSState.collecting)
-    await message.answer("📍 لطفاً مختصات خود را **در قالب چند خطی** ارسال کنید.\n"
-                         "هر خط یک نقطه باشد، مثال:\n\n"
+    await message.answer("📍 لطفاً مختصات خود را به‌صورت چندخطی ارسال کنید.\n\n"
+                         "مثال:\n"
                          "57 4 30.50 30 17 45.20\n"
                          "57 5 15.70 30 18 12.30\n\n"
-                         "✅ برای تأیید، دستور `/done` را ارسال کنید.")
+                         "پس از ارسال نقاط، دستور `/done` را بزنید.")
 
-# دریافت چندین نقطه در یک پیام و ذخیره آن‌ها
+# دریافت مختصات GPS
 @dp.message(GPSState.collecting)
 async def collect_gps(message: types.Message, state: FSMContext):
-    if message.text.strip() == "/done":  # اگر پیام /done باشد، تأیید مختصات اجرا شود
-        await confirm_points(message, state)
-        return
-
-    points = message.text.strip().split("\n")  # جدا کردن مختصات‌ها در هر خط
-    user_data[message.chat.id].extend(points)
-    await message.answer(f"✅ {len(points)} نقطه ذخیره شد.\n"
+    user_data[message.chat.id] = message.text.strip().split("\n")
+    await message.answer("✅ مختصات ذخیره شد.\n"
                          "✉️ ارسال `/done` برای تأیید.")
 
-# پایان دریافت و نمایش تأییدیه
+# نمایش تأییدیه قبل از ارسال به مدیر
 @dp.message(Command("done"))
 async def confirm_points(message: types.Message, state: FSMContext):
     if not user_data.get(message.chat.id):
@@ -70,10 +65,15 @@ async def confirm_points(message: types.Message, state: FSMContext):
 @dp.message(Command("confirm"))
 async def send_to_admin(message: types.Message, state: FSMContext):
     points = "\n".join(user_data.get(message.chat.id, []))
-    await bot.send_message(ADMIN_ID, f"📌 مختصات جدید:\n\n{points}\n\n"
-                                     "📷 لطفاً تصویر نقشه را ارسال کنید.")
-    await message.answer("✅ مختصات شما به سامانه کاداستر معدن ایران ارسال شد. لطفاً منتظر پردازش باشید.")
-    user_data[message.chat.id] = []  # پاک‌سازی لیست کاربر
+    await bot.send_message(ADMIN_ID, f"📌 مختصات جدید:\n\n{points}\n\n📷 لطفاً تصویر نقشه را ارسال کنید.")
+    
+    # اجرای Selenium برای گرفتن اسکرین‌شات
+    screenshot_path = take_screenshot(points)
+    if screenshot_path:
+        photo = FSInputFile(screenshot_path)
+        await message.answer_photo(photo, caption="📷 این تصویر از سایت گرفته شده است.")
+    
+    user_data[message.chat.id] = []  # پاک کردن داده‌ها
     await state.clear()
 
 # لغو فرآیند
@@ -88,7 +88,41 @@ async def cancel_process(message: types.Message, state: FSMContext):
 async def receive_photo_from_admin(message: types.Message):
     photo_file_id = message.photo[-1].file_id  # دریافت بزرگ‌ترین نسخه تصویر
     for user_id in user_data.keys():
-        await bot.send_photo(user_id, photo=photo_file_id, caption="📷 این نقاط GPS از سامانه کاداستر معدن گرفته شده است.")
+        await bot.send_photo(user_id, photo=photo_file_id, caption="📷 این تصویر از مدیر ارسال شده است.")
+
+# اجرای Selenium برای ثبت نقاط و گرفتن اسکرین‌شات
+def take_screenshot(points):
+    try:
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+
+        url = "https://cadastre.mimt.gov.ir/Map/Map.aspx?PNid=0"
+        driver.get(url)
+        driver.implicitly_wait(5)
+
+        # یافتن فیلد مختصات (بر اساس ID یا XPath) و ارسال نقاط
+        for point in points.split("\n"):
+            lat, lat_min, lat_sec, lon, lon_min, lon_sec = map(float, point.split())
+            lat_dms = f"{int(lat)}°{int(lat_min)}'{lat_sec:.2f}\"N"
+            lon_dms = f"{int(lon)}°{int(lon_min)}'{lon_sec:.2f}\"E"
+
+            input_field = driver.find_element(By.ID, "txtLatLon")  # بررسی ID یا XPath مناسب
+            input_field.clear()
+            input_field.send_keys(f"{lat_dms}, {lon_dms}")
+
+        # گرفتن اسکرین‌شات
+        screenshot_path = "map_screenshot.png"
+        driver.save_screenshot(screenshot_path)
+        driver.quit()
+        return screenshot_path
+
+    except Exception as e:
+        logging.error(f"خطا در Selenium: {e}")
+        return None
 
 # اجرای ربات
 async def main():
