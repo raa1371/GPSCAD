@@ -83,12 +83,35 @@ async def cancel_process(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🚫 عملیات لغو شد.")
 
-# دریافت عکس از مدیر و ارسال به کاربر
+# دریافت عکس از مدیر و ارسال به کاربر به همراه نقاط در DMS و DD
 @dp.message(lambda msg: msg.chat.id == int(ADMIN_ID) and msg.photo)
 async def receive_photo_from_admin(message: types.Message):
     photo_file_id = message.photo[-1].file_id  # دریافت بزرگ‌ترین نسخه تصویر
-    for user_id in user_data.keys():
-        await bot.send_photo(user_id, photo=photo_file_id, caption="📷 این نقاط GPS از سامانه کاداستر معدن گرفته شده است.")
+    for user_id, points in user_data.items():
+        points_dms = "\n".join(points)
+        points_dd = "\n".join(convert_to_dd(points))  # تبدیل نقاط به DD
+        caption = f"📷 این نقاط GPS از سامانه کاداستر معدن گرفته شده است.\n\n"
+        caption += f"📍 نقاط در DMS:\n{points_dms}\n\n📍 نقاط در DD:\n{points_dd}"
+        await bot.send_photo(user_id, photo=photo_file_id, caption=caption)
+        await send_map_with_points(user_id, points_dd)  # نمایش نقاط روی نقشه توپوگرافی
+
+# تابع تبدیل مختصات DMS به DD
+def convert_to_dd(points):
+    converted_points = []
+    for point in points:
+        try:
+            parts = list(map(float, point.split()))
+            lon = parts[0] + parts[1] / 60 + parts[2] / 3600
+            lat = parts[3] + parts[4] / 60 + parts[5] / 3600
+            converted_points.append(f"{lon:.6f}, {lat:.6f}")
+        except:
+            continue
+    return converted_points
+
+# تابع نمایش نقشه با نقاط متصل‌شده
+async def send_map_with_points(user_id, points_dd):
+    # این بخش باید با API مناسب برای نمایش نقشه توپوگرافی پیاده‌سازی شود
+    await bot.send_message(user_id, "🗺 نمایش نقاط متصل‌شده روی نقشه توپوگرافی...")
 
 # اجرای ربات
 async def main():
