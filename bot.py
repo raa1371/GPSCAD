@@ -7,11 +7,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 import os
 from dotenv import load_dotenv
+import re
+import folium
+from io import BytesIO
 
 # بارگیری متغیرهای محیطی
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = "117345423"  # آی‌دی عددی تلگرام مدیر (باید عددی باشد)
+ADMIN_ID = "117345423"  # آی‌دی عددی تلگرام مدیر
 
 # بررسی مقدار توکن
 if TOKEN is None:
@@ -30,7 +33,30 @@ class GPSState(StatesGroup):
 # ذخیره مختصات برای هر کاربر
 user_data = {}
 
-# شروع ربات
+def dms_to_dd(dms_str):
+    match = re.match(r"(\d+) (\d+) ([\d\.]+) (\d+) (\d+) ([\d\.]+)", dms_str)
+    if match:
+        lon_deg, lon_min, lon_sec, lat_deg, lat_min, lat_sec = map(float, match.groups())
+        lon_dd = lon_deg + lon_min / 60 + lon_sec / 3600
+        lat_dd = lat_deg + lat_min / 60 + lat_sec / 3600
+        return lat_dd, lon_dd
+    return None
+
+def generate_map(points):
+    if not points:
+        return None
+    
+    m = folium.Map(location=points[0], zoom_start=12, tiles='Stamen Terrain')
+    folium.PolyLine(points, color='blue', weight=2.5, opacity=1).add_to(m)
+    
+    for lat, lon in points:
+        folium.Marker([lat, lon], tooltip=f"{lat}, {lon}").add_to(m)
+    
+    img_data = BytesIO()
+    m.save(img_data, close_file=False)
+    img_data.seek(0)
+    return img_data
+
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     user_data[message.chat.id] = []
@@ -41,19 +67,17 @@ async def start_handler(message: types.Message, state: FSMContext):
                          "57 5 15.70 30 18 12.30\n\n"
                          "✅ برای تأیید، دستور `/done` را ارسال کنید.")
 
-# دریافت چندین نقطه در یک پیام و ذخیره آن‌ها
 @dp.message(GPSState.collecting)
 async def collect_gps(message: types.Message, state: FSMContext):
-    if message.text.strip() == "/done":  # اگر پیام /done باشد، تأیید مختصات اجرا شود
+    if message.text.strip() == "/done":
         await confirm_points(message, state)
         return
-
-    points = message.text.strip().split("\n")  # جدا کردن مختصات‌ها در هر خط
+    
+    points = message.text.strip().split("\n")
     user_data[message.chat.id].extend(points)
     await message.answer(f"✅ {len(points)} نقطه ذخیره شد.\n"
                          "✉️ ارسال `/done` برای تأیید.")
 
-# پایان دریافت و نمایش تأییدیه
 @dp.message(Command("done"))
 async def confirm_points(message: types.Message, state: FSMContext):
     if not user_data.get(message.chat.id):
@@ -66,54 +90,35 @@ async def confirm_points(message: types.Message, state: FSMContext):
                          "✅ ارسال `/confirm`\n"
                          "❌ لغو `/cancel`")
 
-# ارسال مختصات به مدیر
 @dp.message(Command("confirm"))
 async def send_to_admin(message: types.Message, state: FSMContext):
-    points = "\n".join(user_data.get(message.chat.id, []))
-    await bot.send_message(ADMIN_ID, f"📌 مختصات جدید:\n\n{points}\n\n"
+    points_text = "\n".join(user_data.get(message.chat.id, []))
+    converted_points = [dms_to_dd(p) for p in user_data.get(message.chat.id, []) if dms_to_dd(p)]
+    
+    await bot.send_message(ADMIN_ID, f"📌 مختصات جدید:\n\n{points_text}\n\n"
                                      "📷 لطفاً تصویر نقشه را ارسال کنید.")
-    await message.answer("✅ مختصات شما به سامانه کاداستر معدن ایران ارسال شد. لطفاً منتظر پردازش باشید.")
-    user_data[message.chat.id] = []  # پاک‌سازی لیست کاربر
+    await message.answer("✅ مختصات شما ارسال شد. لطفاً منتظر پردازش باشید.")
+    user_data[message.chat.id] = []
     await state.clear()
 
-# لغو فرآیند
 @dp.message(Command("cancel"))
 async def cancel_process(message: types.Message, state: FSMContext):
     user_data[message.chat.id] = []
     await state.clear()
     await message.answer("🚫 عملیات لغو شد.")
 
-# دریافت عکس از مدیر و ارسال به کاربر به همراه نقاط در DMS و DD
 @dp.message(lambda msg: msg.chat.id == int(ADMIN_ID) and msg.photo)
 async def receive_photo_from_admin(message: types.Message):
-    photo_file_id = message.photo[-1].file_id  # دریافت بزرگ‌ترین نسخه تصویر
-    for user_id, points in user_data.items():
-        points_dms = "\n".join(points)
-        points_dd = "\n".join(convert_to_dd(points))  # تبدیل نقاط به DD
-        caption = f"📷 این نقاط GPS از سامانه کاداستر معدن گرفته شده است.\n\n"
-        caption += f"📍 نقاط در DMS:\n{points_dms}\n\n📍 نقاط در DD:\n{points_dd}"
-        await bot.send_photo(user_id, photo=photo_file_id, caption=caption)
-        await send_map_with_points(user_id, points_dd)  # نمایش نقاط روی نقشه توپوگرافی
+    photo_file_id = message.photo[-1].file_id
+    for user_id in user_data.keys():
+        points = user_data.get(user_id, [])
+        converted_points = [dms_to_dd(p) for p in points if dms_to_dd(p)]
+        map_image = generate_map(converted_points)
+        
+        if map_image:
+            await bot.send_photo(user_id, photo=photo_file_id, caption="📷 تصویر ارسال‌شده توسط مدیر.")
+            await bot.send_document(user_id, document=types.BufferedInputFile(map_image.getvalue(), filename="map.html"), caption="📍 نقشه نقاط متصل‌شده.")
 
-# تابع تبدیل مختصات DMS به DD
-def convert_to_dd(points):
-    converted_points = []
-    for point in points:
-        try:
-            parts = list(map(float, point.split()))
-            lon = parts[0] + parts[1] / 60 + parts[2] / 3600
-            lat = parts[3] + parts[4] / 60 + parts[5] / 3600
-            converted_points.append(f"{lon:.6f}, {lat:.6f}")
-        except:
-            continue
-    return converted_points
-
-# تابع نمایش نقشه با نقاط متصل‌شده
-async def send_map_with_points(user_id, points_dd):
-    # این بخش باید با API مناسب برای نمایش نقشه توپوگرافی پیاده‌سازی شود
-    await bot.send_message(user_id, "🗺 نمایش نقاط متصل‌شده روی نقشه توپوگرافی...")
-
-# اجرای ربات
 async def main():
     logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
