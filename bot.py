@@ -1,24 +1,24 @@
-import asyncio
 import logging
-import os
-from dotenv import load_dotenv
+import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import FSInputFile
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
+import os
+from dotenv import load_dotenv
 
 # بارگیری متغیرهای محیطی
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID")  # مقدار را در .env مشخص کنید
+ADMIN_ID = "117345423"  # آی‌دی عددی تلگرام مدیر (باید عددی باشد)
 
-# تنظیمات ربات
+# بررسی مقدار توکن
+if TOKEN is None:
+    print("❌ خطا: مقدار TOKEN مقداردهی نشده است!")
+    exit(1)
+
+# راه‌اندازی ربات و ذخیره‌سازی وضعیت
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -27,7 +27,7 @@ class GPSState(StatesGroup):
     collecting = State()
     confirming = State()
 
-# ذخیره مختصات کاربران
+# ذخیره مختصات برای هر کاربر
 user_data = {}
 
 # شروع ربات
@@ -35,26 +35,25 @@ user_data = {}
 async def start_handler(message: types.Message, state: FSMContext):
     user_data[message.chat.id] = []
     await state.set_state(GPSState.collecting)
-    await message.answer("📍 لطفاً مختصات خود را به‌صورت چندخطی ارسال کنید.\n\n"
-                         "مثال:\n"
+    await message.answer("📍 لطفاً مختصات خود را **در قالب چند خطی** ارسال کنید.\n"
+                         "هر خط یک نقطه باشد، مثال:\n\n"
                          "57 4 30.50 30 17 45.20\n"
                          "57 5 15.70 30 18 12.30\n\n"
-                         "پس از ارسال نقاط، دستور `/done` را بزنید.")
+                         "✅ برای تأیید، دستور `/done` را ارسال کنید.")
 
-# دریافت مختصات GPS
+# دریافت چندین نقطه در یک پیام و ذخیره آن‌ها
 @dp.message(GPSState.collecting)
 async def collect_gps(message: types.Message, state: FSMContext):
-    new_points = message.text.strip().split("\n")
-    if message.chat.id in user_data:
-        user_data[message.chat.id].extend(new_points)
-    else:
-        user_data[message.chat.id] = new_points
+    if message.text.strip() == "/done":  # اگر پیام /done باشد، تأیید مختصات اجرا شود
+        await confirm_points(message, state)
+        return
 
-    if len(new_points) > 0:
-        await message.answer("✅ مختصات ذخیره شد.\n"
-                             "✉️ ارسال `/done` برای تأیید.")
+    points = message.text.strip().split("\n")  # جدا کردن مختصات‌ها در هر خط
+    user_data[message.chat.id].extend(points)
+    await message.answer(f"✅ {len(points)} نقطه ذخیره شد.\n"
+                         "✉️ ارسال `/done` برای تأیید.")
 
-# نمایش تأییدیه قبل از ارسال به مدیر
+# پایان دریافت و نمایش تأییدیه
 @dp.message(Command("done"))
 async def confirm_points(message: types.Message, state: FSMContext):
     if not user_data.get(message.chat.id):
@@ -71,8 +70,10 @@ async def confirm_points(message: types.Message, state: FSMContext):
 @dp.message(Command("confirm"))
 async def send_to_admin(message: types.Message, state: FSMContext):
     points = "\n".join(user_data.get(message.chat.id, []))
-    await bot.send_message(ADMIN_ID, f"📌 مختصات جدید:\n\n{points}\n\n📷 لطفاً تصویر نقشه را ارسال کنید.")
-    user_data[message.chat.id] = []  # پاک کردن داده‌ها
+    await bot.send_message(ADMIN_ID, f"📌 مختصات جدید:\n\n{points}\n\n"
+                                     "📷 لطفاً تصویر نقشه را ارسال کنید.")
+    await message.answer("✅ مختصات شما به سامانه کاداستر معدن ایران ارسال شد. لطفاً منتظر پردازش باشید.")
+    user_data[message.chat.id] = []  # پاک‌سازی لیست کاربر
     await state.clear()
 
 # لغو فرآیند
@@ -87,7 +88,7 @@ async def cancel_process(message: types.Message, state: FSMContext):
 async def receive_photo_from_admin(message: types.Message):
     photo_file_id = message.photo[-1].file_id  # دریافت بزرگ‌ترین نسخه تصویر
     for user_id in user_data.keys():
-        await bot.send_photo(user_id, photo=photo_file_id, caption="📷 این تصویر از مدیر ارسال شده است.")
+        await bot.send_photo(user_id, photo=photo_file_id, caption="📷 این نقاط GPS از سامانه کاداستر معدن گرفته شده است.")
 
 # اجرای ربات
 async def main():
