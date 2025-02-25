@@ -73,7 +73,6 @@ async def send_to_admin(message: types.Message, state: FSMContext):
     await bot.send_message(ADMIN_ID, f"📌 مختصات جدید:\n\n{points}\n\n"
                                      "📷 لطفاً تصویر نقشه را ارسال کنید.")
     await message.answer("✅ مختصات شما به سامانه کاداستر معدن ایران ارسال شد. لطفاً منتظر پردازش باشید.با توجه به سرعت vpn و سایت مرجع بین 1 تا 120ثانیه طول می کشد")
-    user_data[message.chat.id] = []  # پاک‌سازی لیست کاربر
     await state.clear()
 
 # لغو فرآیند
@@ -83,12 +82,23 @@ async def cancel_process(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🚫 عملیات لغو شد.")
 
-# دریافت عکس از مدیر و ارسال به کاربر
+# دریافت عکس از مدیر و ارسال به کاربران همراه با لینک گوگل مپ
 @dp.message(lambda msg: msg.chat.id == int(ADMIN_ID) and msg.photo)
 async def receive_photo_from_admin(message: types.Message):
     photo_file_id = message.photo[-1].file_id  # دریافت بزرگ‌ترین نسخه تصویر
-    for user_id in user_data.keys():
-        await bot.send_photo(user_id, photo=photo_file_id, caption="📷 این نقاط GPS از سامانه کاداستر معدن گرفته شده است.")
+
+    for user_id, points in user_data.items():
+        if not points:
+            continue  # اگر کاربر مختصاتی ارسال نکرده، ادامه نده
+
+        # ساخت لینک Google Maps
+        gps_links = [f"{lat}°{lon}" for lon, lat in (point.split()[:2] for point in points)]
+        maps_link = f"https://www.google.com/maps/dir/{'/'.join(gps_links)}"
+
+        # ارسال عکس و لینک به کاربر
+        await bot.send_photo(user_id, photo=photo_file_id, caption=f"📷 این نقاط GPS از سامانه کاداستر معدن گرفته شده است.\n\n🌍 **مشاهده در Google Maps:**\n[{maps_link}]({maps_link})", parse_mode="Markdown")
+
+    user_data.clear()  # پاک کردن داده‌های کاربران بعد از ارسال
 
 # اجرای ربات
 async def main():
